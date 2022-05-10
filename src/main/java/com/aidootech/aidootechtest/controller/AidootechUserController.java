@@ -236,7 +236,7 @@ public class AidootechUserController {
     @GetMapping("/select")
     public Map<String,Object> selectUserByName(HttpServletRequest request,String userName){
         ResponseUtil<AidootechUser> result = new ResponseUtil<>();
-        AidootechUser aidootechUsers  = aidootechUserService.getOne(new LambdaQueryWrapper<AidootechUser>().eq(AidootechUser::getName, userName));
+        List<AidootechUser> aidootechUsers  = aidootechUserService.list(new LambdaQueryWrapper<AidootechUser>().like(AidootechUser::getName, userName));
         if (aidootechUsers != null){
             AidootechUserController.insLog(request,"查询用户:"+userName);
             return  result.ResponseSuccess(aidootechUsers,"查询成功！");
