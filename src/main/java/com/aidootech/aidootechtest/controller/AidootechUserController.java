@@ -15,17 +15,23 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.zaxxer.hikari.util.FastList;
 import io.swagger.annotations.ApiOperation;
 import lombok.AllArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
+import org.springframework.data.geo.Distance;
+import org.springframework.data.geo.Point;
+import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.util.DigestUtils;
 import org.springframework.web.bind.annotation.*;
 
 import org.yaml.snakeyaml.events.Event;
 import springfox.documentation.annotations.ApiIgnore;
-import sun.security.provider.MD5;
+import org.springframework.data.*;
 
 import javax.servlet.http.HttpServletRequest;
+import java.math.BigDecimal;
+import java.text.DecimalFormat;
 import java.time.LocalTime;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -39,6 +45,7 @@ import java.util.stream.Collectors;
  * @since 2022-05-09
  */
 @RestController
+@Slf4j
 @RequestMapping("/user")
 public class AidootechUserController {
     @Autowired
@@ -50,22 +57,26 @@ public class AidootechUserController {
     @Autowired
     FriendTService friendTService;
 
-    @ApiOperation(value = "注册session，测试用")
+    @ApiOperation(value = "登入session，测试用")
     @GetMapping("/register")
     public Map<String,Object> register(HttpServletRequest request){
         request.getSession().setAttribute("id","1");
         ResponseUtil<String> result = new ResponseUtil<>();
         return result.ResponseSuccess("成功");
     }
+
+
     /**
     * @Author cxl
     * @Date 2022/5/9 21:08
     * @return Map<String,Object>
     **/
-    @ApiOperation(value = "关注列表")
+    @ApiOperation(value = "关注列表,附近在线关注位置")
     @GetMapping("/friendlist")
     public Map<String,Object> friendList(HttpServletRequest request){
         ResponseUtil<userDto> result = new ResponseUtil<>();
+        //距离结果只保留2位小数
+        DecimalFormat locationFormat = new DecimalFormat("#.00");
         //获取当前用户ID
         String userid = request.getSession().getAttribute("id").toString();
         //查询用户已有关注
@@ -77,9 +88,14 @@ public class AidootechUserController {
         List<userDto> userDtos=new ArrayList<>();
         for (AidootechUser friendTName : FriendTNames) {
             if (redisTemplate.opsForValue().get(friendTName.getId().toString()) != null){
-                userDtos.add(new userDto(friendTName.getName(),"yes"));
+                Distance friendlocation = redisTemplate.opsForGeo().distance("friendlocation", Integer.parseInt(userid), friendTName.getId());
+                if (friendlocation!=null){
+                    userDtos.add(new userDto(friendTName.getName(),"yes","距离您"+locationFormat.format(friendlocation.getValue()/1000)+"km"));
+                }else{
+                    userDtos.add(new userDto(friendTName.getName(),"yes","关注好友未授权共享定位！"));
+                }
             }else{
-                userDtos.add(new userDto(friendTName.getName(),"no"));
+                userDtos.add(new userDto(friendTName.getName(),"no","关注好友不在线！"));
             }
         }
         return result.ResponseSuccess(userDtos,"关注列表");
@@ -115,7 +131,8 @@ public class AidootechUserController {
     **/
     @ApiOperation(value = "登入")
     @GetMapping("/login")
-    public Map<String,Object> login(HttpServletRequest request,String userName,String userPassWord){
+    public Map<String,Object> login(HttpServletRequest request, String userName, String userPassWord, Double x,Double y){
+        Point location=new Point(x,y);
         ResponseUtil<userDto> result = new ResponseUtil<>();
         //查询是否有匹配的用户和密码
         AidootechUser aidootechUsers  = aidootechUserService.getOne(new LambdaQueryWrapper<AidootechUser>().eq(AidootechUser::getName, userName)
@@ -125,7 +142,8 @@ public class AidootechUserController {
             //加入reids在线列表
             request.getSession().setAttribute("reidsVal",aidootechUsers.getId().toString()+":"+aidootechUsers.getName());
             redisTemplate.opsForValue().set(aidootechUsers.getId().toString(),aidootechUsers.getName());
-            userDto userDto = new userDto(userName,"yes");
+            redisTemplate.opsForGeo().add("friendlocation",location,aidootechUsers.getId());
+            userDto userDto = new userDto(userName,"yes","在线");
             AidootechUserController.insLog(request,"用户："+userName+"登入");
             return  result.ResponseSuccess(userDto,"登入成功！");
         }
@@ -141,11 +159,14 @@ public class AidootechUserController {
     @GetMapping("/loginoff")
     public Map<String,Object> loginOff(HttpServletRequest request,String userName){
         ResponseUtil<AidootechUser> result = new ResponseUtil<>();
-        request.getSession().setAttribute("id", "");
+        String userid = request.getSession().getAttribute("id").toString();
         String reidsVal = request.getSession().getAttribute("reidsVal").toString();
-        //删除此ID在reids列表
-        redisTemplate.opsForZSet().remove("isonline", reidsVal);
-        userDto userDto = new userDto(userName, "yes");
+        //删除此ID在reids和session中的值
+        redisTemplate.delete(userid);
+        redisTemplate.delete(reidsVal);
+        request.getSession().setAttribute("id", "");
+        request.getSession().setAttribute("reidsVal", "");
+        userDto userDto = new userDto(userName, "no","");
         return result.ResponseSuccess(userDto, "注销成功！");
     }
     /**
